@@ -186,7 +186,29 @@
     background: #f0f0f0;
     display: block;
   }
-  .card-media.video { background: #000; }
+  .card-media.video { background: #000; object-fit: contain; }
+
+  .card-meta-row {
+    position: absolute;
+    bottom: 44px;
+    left: 8px;
+    right: 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .meta-chip {
+    background: rgba(0,0,0,0.7);
+    color: white;
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    backdrop-filter: blur(4px);
+  }
+  .meta-chip.size { background: rgba(230,0,35,0.85); }
 
   .card-footer {
     padding: 10px 12px;
@@ -443,11 +465,19 @@ function extractImages(html) {
 }
 
 function videoQualityScore(url) {
-  if (/720p/i.test(url)) return 720;
-  if (/1080p/i.test(url)) return 1080;
-  if (/540p/i.test(url)) return 540;
-  if (/480p/i.test(url)) return 480;
-  if (/360p/i.test(url)) return 360;
+  const m = url.match(/_(\d{3,4})[wp]\.mp4/i);
+  if (m) return parseInt(m[1], 10);
+  if (/1080/.test(url)) return 1080;
+  if (/720/.test(url)) return 720;
+  if (/540/.test(url)) return 540;
+  if (/480/.test(url)) return 480;
+  if (/360/.test(url)) return 360;
+  return 0;
+}
+
+function videoCodecPreference(url) {
+  if (/expMp4|h264/i.test(url)) return 2;
+  if (/hevcMp4|h265/i.test(url)) return 1;
   return 0;
 }
 
@@ -459,18 +489,27 @@ function extractVideos(html) {
 
   const groups = {};
   for (const url of urls) {
-    const hashMatch = url.match(/([a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]+)\.mp4/i);
+    const hashMatch = url.match(/([a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{32})/i);
     const key = hashMatch ? hashMatch[1] : url;
     if (!groups[key]) groups[key] = [];
     groups[key].push(url);
   }
+
   return Object.keys(groups).map(key => {
-    const best = groups[key].sort((a, b) => videoQualityScore(b) - videoQualityScore(a))[0];
+    const sorted = groups[key].sort((a, b) => {
+      const codecDiff = videoCodecPreference(b) - videoCodecPreference(a);
+      if (codecDiff !== 0) return codecDiff;
+      return videoQualityScore(b) - videoQualityScore(a);
+    });
+    const best = sorted[0];
+    const quality = videoQualityScore(best);
     return {
       type: 'video',
       url: best,
       hash: key.split('/').pop(),
       ext: 'mp4',
+      quality,
+      variantCount: groups[key].length,
     };
   });
 }
@@ -575,8 +614,13 @@ function renderResults() {
 
     const isVideo = item.type === 'video';
     const mediaTag = isVideo
-      ? `<video class="card-media video" src="${item.url}" ${item.poster ? `poster="${item.poster}"` : ''} preload="metadata" muted></video>`
+      ? `<video class="card-media video" src="${item.url}" ${item.poster ? `poster="${item.poster}"` : ''} preload="metadata" controls playsinline></video>`
       : `<img class="card-media" src="${item.url}" loading="lazy" alt="" />`;
+
+    const chips = [];
+    if (item.duration != null) chips.push(`<span class="meta-chip">${formatDuration(item.duration)}</span>`);
+    if (item.width && item.height) chips.push(`<span class="meta-chip">${item.width}×${item.height}</span>`);
+    if (item.fileSize != null) chips.push(`<span class="meta-chip size">${formatSize(item.fileSize)}</span>`);
 
     const statusText = {
       pending: '',
@@ -590,24 +634,67 @@ function renderResults() {
       <div class="card-checkbox"><input type="checkbox" ${item.selected ? 'checked' : ''} data-id="${item.id}" /></div>
       <div class="card-badge ${isVideo ? 'video' : ''}">${isVideo ? 'VIDEO' : 'IMG'}</div>
       ${mediaTag}
+      <div class="card-meta-row">${chips.join('')}</div>
       <div class="card-footer">
         <span class="card-source"><a href="${item.sourceUrl}" target="_blank" title="${item.sourceUrl}">${item.pinId || '链接'}</a></span>
         <span class="card-status ${statusClass}">${statusText}</span>
       </div>
     `;
     els.results.appendChild(card);
+
+    const mediaEl = card.querySelector('.card-media');
+    if (isVideo) {
+      mediaEl.addEventListener('loadedmetadata', () => {
+        if (item.duration == null && isFinite(mediaEl.duration)) {
+          item.duration = mediaEl.duration;
+          item.width = mediaEl.videoWidth;
+          item.height = mediaEl.videoHeight;
+          updateChips(card, item);
+        }
+      });
+    } else {
+      mediaEl.addEventListener('load', () => {
+        if (!item.width) {
+          item.width = mediaEl.naturalWidth;
+          item.height = mediaEl.naturalHeight;
+          updateChips(card, item);
+        }
+      });
+    }
   });
 
   els.results.querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', () => {
       const item = state.items.find(x => x.id === cb.dataset.id);
       if (item) item.selected = cb.checked;
-      renderResults();
+      cb.closest('.result-card').classList.toggle('selected', cb.checked);
       updateSelectionUI();
     });
   });
 
   updateSelectionUI();
+}
+
+function updateChips(card, item) {
+  const row = card.querySelector('.card-meta-row');
+  if (!row) return;
+  const chips = [];
+  if (item.duration != null) chips.push(`<span class="meta-chip">${formatDuration(item.duration)}</span>`);
+  if (item.width && item.height) chips.push(`<span class="meta-chip">${item.width}×${item.height}</span>`);
+  if (item.fileSize != null) chips.push(`<span class="meta-chip size">${formatSize(item.fileSize)}</span>`);
+  row.innerHTML = chips.join('');
+}
+
+function formatDuration(s) {
+  if (!isFinite(s) || s < 0) return '';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
 function showSummary() {
@@ -681,6 +768,7 @@ async function downloadSelected() {
     try {
       const blob = await fetchAsBlob(item.url);
       await saveBlob(blob, item.filename);
+      item.fileSize = blob.size;
       item.downloadStatus = 'done';
     } catch (e) {
       item.downloadStatus = 'error';
@@ -711,6 +799,7 @@ async function downloadAsZip() {
     try {
       const blob = await fetchAsBlob(item.url);
       zip.file(item.filename, blob);
+      item.fileSize = blob.size;
       item.downloadStatus = 'done';
     } catch (e) {
       item.downloadStatus = 'error';
