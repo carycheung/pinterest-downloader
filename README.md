@@ -1,47 +1,36 @@
 # Pinterest Downloader
 
-A zero-backend, single-file web app to download videos and original-size images from Pinterest. Runs entirely in your browser.
+A zero-backend, single-file web app to batch download videos and original-size images from Pinterest. Runs entirely in your browser.
 
-**Live demo**: https://YOUR_USERNAME.github.io/pinterest-downloader/
+**🔗 Live: https://carycheung.github.io/pinterest-downloader/**
 
 ## Features
 
-- Paste a Pinterest URL (`pinterest.com/pin/...` or `pin.it/...` short links)
-- Extracts 720p MP4 videos and original-resolution images
-- Multiple CORS proxy fallbacks
-- No server, no tracking — pure HTML/CSS/JS in one file
-- Free hosting on GitHub Pages
+- Paste many Pinterest URLs (one per line) and parse them in parallel
+- Supports both `pinterest.com/pin/...` and `pin.it/...` short links
+- Smart video variant dedup — picks H.264 + highest resolution automatically
+- Per-card preview: playable video with duration, image with dimensions, file size after download
+- Bulk select / select videos only / select images only
+- Direct write to a chosen folder (Chrome/Edge/Arc via File System Access API)
+- ZIP packaging fallback for all browsers
+- No server, no tracking, no analytics — pure HTML/CSS/JS in one file
 
 ## How it works
 
-The page fetches the Pinterest pin URL through a public CORS proxy, parses the embedded `__PWS_DATA__` JSON for media URLs, then downloads the file as a Blob via the browser's native download flow. Nothing leaves your machine except the proxied request to Pinterest.
-
-## Deploy to GitHub Pages
-
-1. Create a new GitHub repo (e.g. `pinterest-downloader`), public.
-2. Push this folder to it:
-   ```bash
-   git init
-   git add .
-   git commit -m "init"
-   git branch -M main
-   git remote add origin https://github.com/YOUR_USERNAME/pinterest-downloader.git
-   git push -u origin main
-   ```
-3. On GitHub: **Settings → Pages → Source: Deploy from branch → main / root → Save**.
-4. Wait ~1 minute, your site is live at `https://YOUR_USERNAME.github.io/pinterest-downloader/`.
+The page fetches each Pinterest pin URL through a public CORS proxy, scans the response HTML for `i.pinimg.com` (images) and `v.pinimg.com` (videos) URLs, deduplicates by file hash, and downloads each blob via either the File System Access API or the browser's native download flow. Nothing leaves your machine except the proxied request to Pinterest.
 
 ## Local use
 
-Just open `index.html` in your browser. That's it.
+Just open `index.html` in your browser.
 
 ## Limitations
 
-- Public CORS proxies (corsproxy.io / allorigins / codetabs) occasionally rate-limit or go down. If parsing fails, retry — the app falls back through three proxies automatically.
-- Story pins and some carousel pins return only the first slide.
-- HLS-only videos (rare on Pinterest) aren't supported in pure browser JS.
+- Public CORS proxies (codetabs / corsproxy / allorigins) occasionally rate-limit or go down. Retry usually works.
+- File size cannot be predicted before download — Pinterest CDN doesn't expose `Content-Length` through proxies.
+- Story pins / carousel pins may return only the first slide.
+- HLS-only videos aren't supported in pure browser JS.
 
-If proxies become a problem long-term, swap `CORS_PROXIES` in `index.html` with your own [Cloudflare Worker](https://developers.cloudflare.com/workers/) — takes 5 minutes and gives you unlimited free requests.
+For long-term stability, swap the proxies in `index.html` with your own [Cloudflare Worker](https://developers.cloudflare.com/workers/) — takes 5 minutes and gives you unlimited free requests.
 
 ## License
 
