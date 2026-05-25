@@ -134,10 +134,12 @@
 
 <script>
 const CORS_PROXIES = [
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
+
+const BINARY_PROXY = url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`;
 
 const $ = id => document.getElementById(id);
 const statusEl = $('status');
@@ -249,19 +251,29 @@ function extractImages(html) {
 }
 
 async function downloadFile(url, filename) {
-  showStatus('正在下载到本地...', 'loading');
+  showStatus('正在下载…大文件可能需要等几秒', 'loading');
   try {
-    const { text } = { text: null };
     let blob;
+    let usedProxy = false;
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('直连失败');
+      const res = await fetch(url, { mode: 'cors' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       blob = await res.blob();
     } catch {
-      const proxied = CORS_PROXIES[0](url);
-      const res = await fetch(proxied);
+      usedProxy = true;
+      const res = await fetch(BINARY_PROXY(url));
+      if (!res.ok) throw new Error(`代理返回 HTTP ${res.status}`);
+      const ct = res.headers.get('content-type') || '';
+      if (ct.startsWith('text/html')) {
+        throw new Error('代理返回了 HTML 错误页,请稍后重试');
+      }
       blob = await res.blob();
     }
+
+    if (blob.size < 1024) {
+      throw new Error(`下载内容过小 (${blob.size} 字节),很可能不是真实文件`);
+    }
+
     const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = blobUrl;
@@ -270,8 +282,9 @@ async function downloadFile(url, filename) {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-    showStatus('已开始下载', 'success');
-    setTimeout(hideStatus, 2000);
+    const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+    showStatus(`已下载 ${sizeMB} MB${usedProxy ? ' (经代理)' : ''}`, 'success');
+    setTimeout(hideStatus, 3000);
   } catch (e) {
     showStatus(`下载失败: ${e.message}`, 'error');
   }
