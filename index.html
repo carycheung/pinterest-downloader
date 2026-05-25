@@ -180,74 +180,72 @@ async function resolveShortUrl(shortUrl) {
   throw new Error('无法解析短链，请直接用完整 pin 链接');
 }
 
+const SIZE_RANK = { originals: 9999, '1200x': 1200, '736x': 736, '600x315': 600, '564x': 564, '474x': 474, '236x': 236, '136x136': 136, '60x60': 60 };
+
 function extractMediaFromHtml(html) {
+  const videos = extractVideos(html);
+  const images = extractImages(html);
+
+  if (videos.length > 0) {
+    const poster = images[0]?.url;
+    return videos.map(v => ({ ...v, poster }));
+  }
+  return images;
+}
+
+function extractVideos(html) {
+  const urls = new Set();
+  const re = /https:\/\/v[0-9]?\.pinimg\.com\/videos\/[^"'\s<>)]+\.(?:mp4|m3u8)/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) urls.add(m[0]);
+
+  const groups = {};
+  for (const url of urls) {
+    const hashMatch = url.match(/([a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]+)\.(?:mp4|m3u8)/i);
+    const key = hashMatch ? hashMatch[1] : url;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(url);
+  }
+
   const results = [];
-
-  const pwsMatch = html.match(/<script[^>]*id=["']__PWS_DATA__["'][^>]*>([\s\S]*?)<\/script>/);
-  if (pwsMatch) {
-    try {
-      const data = JSON.parse(pwsMatch[1]);
-      const pin = findPinObject(data);
-      if (pin) {
-        if (pin.videos && pin.videos.video_list) {
-          const videos = pin.videos.video_list;
-          const best = videos.V_720P || videos.V_EXP7 || videos.V_HLSV4 || Object.values(videos)[0];
-          if (best && best.url) {
-            results.push({
-              type: 'video',
-              url: best.url,
-              width: best.width,
-              height: best.height,
-              poster: pin.images?.orig?.url,
-            });
-          }
-        }
-        if (pin.story_pin_data?.pages) {
-          for (const page of pin.story_pin_data.pages) {
-            for (const block of (page.blocks || [])) {
-              if (block.video?.video_list) {
-                const v = block.video.video_list.V_720P || Object.values(block.video.video_list)[0];
-                if (v?.url) results.push({ type: 'video', url: v.url, width: v.width, height: v.height });
-              }
-              if (block.image?.images?.originals) {
-                results.push({ type: 'image', url: block.image.images.originals.url });
-              }
-            }
-          }
-        }
-        if (results.length === 0 && pin.images) {
-          const orig = pin.images.orig || pin.images['736x'] || Object.values(pin.images).pop();
-          if (orig?.url) results.push({ type: 'image', url: upgradeImageUrl(orig.url) });
-        }
-      }
-    } catch (e) { console.warn('PWS_DATA 解析失败:', e); }
+  for (const key in groups) {
+    const list = groups[key];
+    const mp4s = list.filter(u => u.endsWith('.mp4'));
+    if (mp4s.length === 0) continue;
+    const best = mp4s.sort((a, b) => videoQualityScore(b) - videoQualityScore(a))[0];
+    results.push({ type: 'video', url: best });
   }
-
-  if (results.length === 0) {
-    const ogVideo = html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)["']/i);
-    if (ogVideo) results.push({ type: 'video', url: ogVideo[1] });
-
-    const ogImage = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
-    if (ogImage && results.length === 0) results.push({ type: 'image', url: upgradeImageUrl(ogImage[1]) });
-  }
-
   return results;
 }
 
-function findPinObject(obj, depth = 0) {
-  if (depth > 10 || !obj || typeof obj !== 'object') return null;
-  if (obj.id && (obj.images || obj.videos || obj.story_pin_data) && (obj.pinner || obj.grid_title !== undefined || obj.description !== undefined)) {
-    return obj;
-  }
-  for (const k of Object.keys(obj)) {
-    const found = findPinObject(obj[k], depth + 1);
-    if (found) return found;
-  }
-  return null;
+function videoQualityScore(url) {
+  if (/720p/i.test(url)) return 720;
+  if (/1080p/i.test(url)) return 1080;
+  if (/540p/i.test(url)) return 540;
+  if (/480p/i.test(url)) return 480;
+  if (/360p/i.test(url)) return 360;
+  const bitrateMatch = url.match(/_(\d{3,5})\.mp4/);
+  if (bitrateMatch) return parseInt(bitrateMatch[1], 10) / 10;
+  return 0;
 }
 
-function upgradeImageUrl(url) {
-  return url.replace(/\/\d+x\d*\//, '/originals/').replace(/\/(236x|474x|564x|736x)\//, '/originals/');
+function extractImages(html) {
+  const byHash = {};
+  const re = /["']https:\/\/i\.pinimg\.com\/(originals|\d+x\d*|\d+x)\/([a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]+\.(?:jpg|jpeg|png|gif|webp))["']/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const size = m[1], hash = m[2];
+    if (!byHash[hash]) byHash[hash] = [];
+    byHash[hash].push(size);
+  }
+
+  const results = [];
+  for (const hash in byHash) {
+    const sizes = byHash[hash];
+    sizes.sort((a, b) => (SIZE_RANK[b] || 0) - (SIZE_RANK[a] || 0));
+    results.push({ type: 'image', url: `https://i.pinimg.com/originals/${hash}` });
+  }
+  return results;
 }
 
 async function downloadFile(url, filename) {
