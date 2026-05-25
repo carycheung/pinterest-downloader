@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pinterest 下载器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: linear-gradient(135deg, #fef3f3 0%, #fff 50%, #f3f8ff 100%);
+    min-height: 100vh;
+    padding: 40px 20px;
+    color: #222;
+  }
+  .container { max-width: 720px; margin: 0 auto; }
+  h1 {
+    font-size: 28px;
+    margin-bottom: 8px;
+    background: linear-gradient(90deg, #e60023, #bd081c);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
+  .input-row { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type="text"] {
+    flex: 1;
+    padding: 14px 16px;
+    border: 2px solid #eee;
+    border-radius: 12px;
+    font-size: 15px;
+    outline: none;
+    transition: border 0.2s;
+  }
+  input[type="text"]:focus { border-color: #e60023; }
+  button {
+    padding: 14px 24px;
+    background: #e60023;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+  }
+  button:hover:not(:disabled) { background: #bd081c; }
+  button:active:not(:disabled) { transform: scale(0.98); }
+  button:disabled { background: #ccc; cursor: not-allowed; }
+  .status {
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .status.show { display: block; }
+  .status.loading { background: #fff8e6; color: #8a6d00; }
+  .status.error { background: #ffeaea; color: #c00; }
+  .status.success { background: #e8f7ee; color: #0a7a3a; }
+  .results { display: grid; gap: 16px; }
+  .result-card {
+    background: white;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  }
+  .result-card video,
+  .result-card img {
+    width: 100%;
+    display: block;
+    max-height: 500px;
+    object-fit: contain;
+    background: #000;
+  }
+  .result-card img { background: #f5f5f5; }
+  .card-actions {
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  .card-meta { font-size: 13px; color: #888; }
+  .download-btn {
+    padding: 8px 18px;
+    font-size: 14px;
+    border-radius: 8px;
+  }
+  .tips {
+    margin-top: 32px;
+    padding: 16px;
+    background: rgba(255,255,255,0.6);
+    border-radius: 12px;
+    font-size: 13px;
+    color: #666;
+    line-height: 1.7;
+  }
+  .tips b { color: #444; }
+  footer {
+    text-align: center;
+    margin-top: 40px;
+    font-size: 12px;
+    color: #aaa;
+  }
+  footer a { color: #888; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Pinterest 下载器</h1>
+  <p class="subtitle">粘贴 Pinterest 链接，下载视频或原图</p>
+
+  <div class="input-row">
+    <input type="text" id="urlInput" placeholder="https://www.pinterest.com/pin/... 或 https://pin.it/..." />
+    <button id="parseBtn">解析</button>
+  </div>
+
+  <div class="status" id="status"></div>
+  <div class="results" id="results"></div>
+
+  <div class="tips">
+    <b>使用说明</b><br>
+    支持 pinterest.com/pin/ 完整链接和 pin.it/ 短链。<br>
+    视频会拿到 720P mp4，图片会拿原始尺寸。<br>
+    解析依赖公开 CORS 代理，偶尔抽风时换个代理重试即可。<br>
+    <b>所有下载都在你浏览器本地完成，不经过任何服务器。</b>
+  </div>
+
+  <footer>
+    <a href="https://github.com" target="_blank">View on GitHub</a>
+  </footer>
+</div>
+
+<script>
+const CORS_PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+const $ = id => document.getElementById(id);
+const statusEl = $('status');
+const resultsEl = $('results');
+const urlInput = $('urlInput');
+const parseBtn = $('parseBtn');
+
+function showStatus(msg, type = 'loading') {
+  statusEl.className = `status show ${type}`;
+  statusEl.textContent = msg;
+}
+function hideStatus() { statusEl.className = 'status'; }
+function clearResults() { resultsEl.innerHTML = ''; }
+
+async function fetchWithProxy(targetUrl) {
+  let lastErr;
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    try {
+      const proxyUrl = CORS_PROXIES[i](targetUrl);
+      const res = await fetch(proxyUrl, { redirect: 'follow' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (text && text.length > 500) return { text, finalUrl: res.url };
+      throw new Error('响应内容过短');
+    } catch (e) {
+      lastErr = e;
+      console.warn(`代理 ${i + 1} 失败:`, e.message);
+    }
+  }
+  throw new Error(`所有代理都失败了: ${lastErr?.message || '未知错误'}`);
+}
+
+async function resolveShortUrl(shortUrl) {
+  const { finalUrl, text } = await fetchWithProxy(shortUrl);
+  if (finalUrl && finalUrl.includes('/pin/')) return finalUrl;
+  const m = text.match(/https?:\/\/(?:www\.)?pinterest\.[^"'\s]+\/pin\/\d+/);
+  if (m) return m[0];
+  const canonical = text.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
+  if (canonical && canonical[1].includes('/pin/')) return canonical[1];
+  throw new Error('无法解析短链，请直接用完整 pin 链接');
+}
+
+function extractMediaFromHtml(html) {
+  const results = [];
+
+  const pwsMatch = html.match(/<script[^>]*id=["']__PWS_DATA__["'][^>]*>([\s\S]*?)<\/script>/);
+  if (pwsMatch) {
+    try {
+      const data = JSON.parse(pwsMatch[1]);
+      const pin = findPinObject(data);
+      if (pin) {
+        if (pin.videos && pin.videos.video_list) {
+          const videos = pin.videos.video_list;
+          const best = videos.V_720P || videos.V_EXP7 || videos.V_HLSV4 || Object.values(videos)[0];
+          if (best && best.url) {
+            results.push({
+              type: 'video',
+              url: best.url,
+              width: best.width,
+              height: best.height,
+              poster: pin.images?.orig?.url,
+            });
+          }
+        }
+        if (pin.story_pin_data?.pages) {
+          for (const page of pin.story_pin_data.pages) {
+            for (const block of (page.blocks || [])) {
+              if (block.video?.video_list) {
+                const v = block.video.video_list.V_720P || Object.values(block.video.video_list)[0];
+                if (v?.url) results.push({ type: 'video', url: v.url, width: v.width, height: v.height });
+              }
+              if (block.image?.images?.originals) {
+                results.push({ type: 'image', url: block.image.images.originals.url });
+              }
+            }
+          }
+        }
+        if (results.length === 0 && pin.images) {
+          const orig = pin.images.orig || pin.images['736x'] || Object.values(pin.images).pop();
+          if (orig?.url) results.push({ type: 'image', url: upgradeImageUrl(orig.url) });
+        }
+      }
+    } catch (e) { console.warn('PWS_DATA 解析失败:', e); }
+  }
+
+  if (results.length === 0) {
+    const ogVideo = html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)["']/i);
+    if (ogVideo) results.push({ type: 'video', url: ogVideo[1] });
+
+    const ogImage = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    if (ogImage && results.length === 0) results.push({ type: 'image', url: upgradeImageUrl(ogImage[1]) });
+  }
+
+  return results;
+}
+
+function findPinObject(obj, depth = 0) {
+  if (depth > 10 || !obj || typeof obj !== 'object') return null;
+  if (obj.id && (obj.images || obj.videos || obj.story_pin_data) && (obj.pinner || obj.grid_title !== undefined || obj.description !== undefined)) {
+    return obj;
+  }
+  for (const k of Object.keys(obj)) {
+    const found = findPinObject(obj[k], depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function upgradeImageUrl(url) {
+  return url.replace(/\/\d+x\d*\//, '/originals/').replace(/\/(236x|474x|564x|736x)\//, '/originals/');
+}
+
+async function downloadFile(url, filename) {
+  showStatus('正在下载到本地...', 'loading');
+  try {
+    const { text } = { text: null };
+    let blob;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('直连失败');
+      blob = await res.blob();
+    } catch {
+      const proxied = CORS_PROXIES[0](url);
+      const res = await fetch(proxied);
+      blob = await res.blob();
+    }
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    showStatus('已开始下载', 'success');
+    setTimeout(hideStatus, 2000);
+  } catch (e) {
+    showStatus(`下载失败: ${e.message}`, 'error');
+  }
+}
+
+function renderResults(items, pinId) {
+  clearResults();
+  if (!items.length) {
+    showStatus('没解析到媒体内容，可���是这个 pin 受限或页面结构变了', 'error');
+    return;
+  }
+  items.forEach((item, idx) => {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+    const ext = item.type === 'video' ? 'mp4' : (item.url.match(/\.(jpg|jpeg|png|gif|webp)/i)?.[1] || 'jpg');
+    const filename = `pinterest_${pinId || Date.now()}_${idx + 1}.${ext}`;
+    const meta = item.width && item.height ? `${item.width}×${item.height}` : item.type;
+
+    if (item.type === 'video') {
+      card.innerHTML = `
+        <video src="${item.url}" controls ${item.poster ? `poster="${item.poster}"` : ''}></video>
+        <div class="card-actions">
+          <span class="card-meta">视频 · ${meta}</span>
+          <button class="download-btn" data-url="${item.url}" data-name="${filename}">下载视频</button>
+        </div>`;
+    } else {
+      card.innerHTML = `
+        <img src="${item.url}" alt="" loading="lazy" />
+        <div class="card-actions">
+          <span class="card-meta">图片 · 原始尺寸</span>
+          <button class="download-btn" data-url="${item.url}" data-name="${filename}">下载图片</button>
+        </div>`;
+    }
+    resultsEl.appendChild(card);
+  });
+  resultsEl.querySelectorAll('.download-btn').forEach(btn => {
+    btn.addEventListener('click', () => downloadFile(btn.dataset.url, btn.dataset.name));
+  });
+}
+
+async function handleParse() {
+  const raw = urlInput.value.trim();
+  if (!raw) { showStatus('请先粘贴 Pinterest 链接', 'error'); return; }
+  if (!/pinterest\.|pin\.it/i.test(raw)) { showStatus('这不是 Pinterest 链接', 'error'); return; }
+
+  parseBtn.disabled = true;
+  clearResults();
+  try {
+    let pinUrl = raw;
+    if (/pin\.it/i.test(raw)) {
+      showStatus('解析短链中...', 'loading');
+      pinUrl = await resolveShortUrl(raw);
+    }
+    showStatus('抓取页面中...', 'loading');
+    const { text: html } = await fetchWithProxy(pinUrl);
+    showStatus('提取媒体中...', 'loading');
+    const items = extractMediaFromHtml(html);
+    const pinId = pinUrl.match(/\/pin\/(\d+)/)?.[1];
+    renderResults(items, pinId);
+    if (items.length) showStatus(`找到 ${items.length} 个媒体文件`, 'success');
+  } catch (e) {
+    console.error(e);
+    showStatus(`解析失败: ${e.message}`, 'error');
+  } finally {
+    parseBtn.disabled = false;
+  }
+}
+
+parseBtn.addEventListener('click', handleParse);
+urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') handleParse(); });
+</script>
+</body>
+</html>
