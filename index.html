@@ -304,6 +304,82 @@
     margin-top: 8px;
     line-height: 1.6;
   }
+
+  .download-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 20, 30, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    animation: fadeIn 0.2s ease;
+  }
+  .download-overlay.show { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .download-card {
+    background: white;
+    border-radius: 18px;
+    padding: 28px 32px;
+    min-width: 360px;
+    max-width: 90vw;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    text-align: center;
+  }
+  .download-card h3 {
+    font-size: 16px;
+    margin-bottom: 4px;
+    color: #222;
+  }
+  .download-card .sub {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 18px;
+  }
+  .download-card .pct {
+    font-size: 36px;
+    font-weight: 700;
+    background: linear-gradient(90deg, #e60023, #ff5577);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .download-card .bar {
+    height: 8px;
+    background: #f0f0f0;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .download-card .bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #e60023, #ff5577);
+    transition: width 0.3s;
+    width: 0;
+  }
+  .download-card .now {
+    font-size: 12px;
+    color: #666;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    margin-bottom: 16px;
+  }
+  .download-card .stats {
+    display: flex;
+    justify-content: center;
+    gap: 18px;
+    font-size: 12px;
+    color: #888;
+  }
+  .download-card .stats b { color: #222; font-weight: 600; }
+  .download-card .stats .ok b { color: #0a7a3a; }
+  .download-card .stats .fail b { color: #c00; }
 </style>
 </head>
 <body>
@@ -351,6 +427,21 @@ https://www.pinterest.com/pin/987654321/
   <button id="downloadZipBtn">打包 ZIP</button>
 </div>
 
+<div class="download-overlay" id="downloadOverlay">
+  <div class="download-card">
+    <h3 id="overlayTitle">下载中</h3>
+    <div class="sub" id="overlaySub">正在保存到本地</div>
+    <div class="pct" id="overlayPct">0%</div>
+    <div class="bar"><div class="bar-fill" id="overlayBar"></div></div>
+    <div class="now" id="overlayNow">准备中…</div>
+    <div class="stats">
+      <span>共 <b id="overlayTotal">0</b></span>
+      <span class="ok">成功 <b id="overlayOk">0</b></span>
+      <span class="fail">失败 <b id="overlayFail">0</b></span>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 const CORS_PROXIES = [
@@ -392,7 +483,42 @@ const els = {
   selectImagesBtn: $('selectImagesBtn'),
   downloadSelectedBtn: $('downloadSelectedBtn'),
   downloadZipBtn: $('downloadZipBtn'),
+  overlay: $('downloadOverlay'),
+  overlayTitle: $('overlayTitle'),
+  overlaySub: $('overlaySub'),
+  overlayPct: $('overlayPct'),
+  overlayBar: $('overlayBar'),
+  overlayNow: $('overlayNow'),
+  overlayTotal: $('overlayTotal'),
+  overlayOk: $('overlayOk'),
+  overlayFail: $('overlayFail'),
 };
+
+function showOverlay(title, sub, total) {
+  els.overlayTitle.textContent = title;
+  els.overlaySub.textContent = sub;
+  els.overlayTotal.textContent = total;
+  els.overlayOk.textContent = 0;
+  els.overlayFail.textContent = 0;
+  els.overlayPct.textContent = '0%';
+  els.overlayBar.style.width = '0%';
+  els.overlayNow.textContent = '准备中…';
+  els.overlay.classList.add('show');
+}
+function updateOverlay({ done, total, ok, fail, now, sub }) {
+  if (done != null && total != null) {
+    const pct = Math.round((done / total) * 100);
+    els.overlayPct.textContent = pct + '%';
+    els.overlayBar.style.width = pct + '%';
+  }
+  if (ok != null) els.overlayOk.textContent = ok;
+  if (fail != null) els.overlayFail.textContent = fail;
+  if (now) els.overlayNow.textContent = now;
+  if (sub) els.overlaySub.textContent = sub;
+}
+function hideOverlay() {
+  els.overlay.classList.remove('show');
+}
 
 const supportsFS = 'showDirectoryPicker' in window;
 if (!supportsFS) {
@@ -764,27 +890,40 @@ async function downloadSelected() {
   els.downloadSelectedBtn.disabled = true;
   els.downloadZipBtn.disabled = true;
 
-  let done = 0;
+  const total = targets.length;
+  const sub = state.dirHandle ? `保存到 ${state.dirHandle.name}/` : '通过浏览器下载';
+  showOverlay('下载中', sub, total);
+
+  let done = 0, ok = 0, fail = 0;
   await pool(targets, DOWNLOAD_CONCURRENCY, async (item) => {
     item.downloadStatus = 'downloading';
+    updateOverlay({ now: item.filename });
     renderResults();
     try {
       const blob = await fetchAsBlob(item.url);
       await saveBlob(blob, item.filename);
       item.fileSize = blob.size;
       item.downloadStatus = 'done';
+      ok++;
     } catch (e) {
       item.downloadStatus = 'error';
       item.errorMsg = e.message;
+      fail++;
     }
     done++;
+    updateOverlay({ done, total, ok, fail });
     renderResults();
   });
 
+  updateOverlay({
+    sub: fail > 0 ? `完成 · 失败 ${fail} 个` : '全部完成',
+    now: '✓',
+  });
+  setTimeout(hideOverlay, fail > 0 ? 2500 : 1200);
+
+  els.downloadSelectedBtn.disabled = false;
+  els.downloadZipBtn.disabled = false;
   updateSelectionUI();
-  const okCount = targets.filter(x => x.downloadStatus === 'done').length;
-  const failCount = targets.length - okCount;
-  alert(`下载完成 · 成功 ${okCount}${failCount ? ` · 失败 ${failCount}` : ''}`);
 }
 
 async function downloadAsZip() {
@@ -794,31 +933,45 @@ async function downloadAsZip() {
 
   els.downloadSelectedBtn.disabled = true;
   els.downloadZipBtn.disabled = true;
-  els.downloadZipBtn.textContent = '打包中…';
+
+  const total = targets.length;
+  showOverlay('打包 ZIP', '抓取媒体并压缩', total);
 
   const zip = new JSZip();
-  let done = 0;
+  let done = 0, ok = 0, fail = 0;
   await pool(targets, DOWNLOAD_CONCURRENCY, async (item) => {
+    updateOverlay({ now: item.filename });
     try {
       const blob = await fetchAsBlob(item.url);
       zip.file(item.filename, blob);
       item.fileSize = blob.size;
       item.downloadStatus = 'done';
+      ok++;
     } catch (e) {
       item.downloadStatus = 'error';
       item.errorMsg = e.message;
+      fail++;
     }
     done++;
-    els.downloadZipBtn.textContent = `打包中 ${done}/${targets.length}`;
+    updateOverlay({ done, total, ok, fail });
     renderResults();
   });
 
-  els.downloadZipBtn.textContent = '生成 ZIP…';
-  const zipBlob = await zip.generateAsync({ type: 'blob' });
+  updateOverlay({ sub: '生成 ZIP 文件…', now: '压缩中…' });
+  const zipBlob = await zip.generateAsync({ type: 'blob' }, (meta) => {
+    updateOverlay({ now: `压缩中 ${Math.round(meta.percent)}%` });
+  });
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   await saveBlob(zipBlob, `pinterest_${ts}.zip`);
 
-  els.downloadZipBtn.textContent = '打包 ZIP';
+  updateOverlay({
+    sub: fail > 0 ? `完成 · 失败 ${fail} 个` : 'ZIP 已保存',
+    now: '✓',
+  });
+  setTimeout(hideOverlay, fail > 0 ? 2500 : 1200);
+
+  els.downloadSelectedBtn.disabled = false;
+  els.downloadZipBtn.disabled = false;
   updateSelectionUI();
 }
 
