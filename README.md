@@ -11,6 +11,7 @@ A zero-backend, single-file web app to batch download videos and original-size i
 - Smart video variant dedup — picks H.264 + highest resolution automatically
 - Per-card preview: playable video with duration, image with dimensions, file size after download
 - Bulk select / select videos only / select images only
+- Global download progress overlay with per-file status and auto-dismiss
 - Direct write to a chosen folder (Chrome/Edge/Arc via File System Access API)
 - ZIP packaging fallback for all browsers
 - No server, no tracking, no analytics — pure HTML/CSS/JS in one file
