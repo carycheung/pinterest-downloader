@@ -1,37 +1,36 @@
-# Pinterest Downloader
+# Montik 批量下载器
 
-A zero-backend, single-file web app to batch download videos and original-size images from Pinterest. Runs entirely in your browser.
+零后端、单文件的网页小工具,在浏览器里批量保存网页里的视频和原图。
 
-**🔗 Live: https://carycheung.github.io/pinterest-downloader/**
+**🔗 在线使用: https://carycheung.github.io/montik-downloader/**
 
-## Features
+## 功能
 
-- Paste many Pinterest URLs (one per line) and parse them in parallel
-- Supports both `pinterest.com/pin/...` and `pin.it/...` short links
-- Smart video variant dedup — picks H.264 + highest resolution automatically
-- Per-card preview: playable video with duration, image with dimensions, file size after download
-- Bulk select / select videos only / select images only
-- Global download progress overlay with per-file status and auto-dismiss
-- Direct write to a chosen folder (Chrome/Edge/Arc via File System Access API)
-- ZIP packaging fallback for all browsers
-- No server, no tracking, no analytics — pure HTML/CSS/JS in one file
+- 粘贴多条链接(每行一个),并发解析
+- 智能视频变体去重 — 自动选 H.264 + 最高分辨率
+- 卡片预览:视频可直接播放并显示时长,图片显示原始尺寸,下载完后显示文件大小
+- 批量勾选 / 仅选视频 / 仅选图片 快捷操作
+- 全局下载进度浮层(当前文件名 + 百分比 + 成功/失败计数),完成后自动消失
+- 直写到指定文件夹(Chrome / Edge / Arc 通过 File System Access API)
+- 所有浏览器都支持的 ZIP 打包兜底
+- 没有后端、没有埋点、没有数据回传 — 全部逻辑在你的浏览器里跑
 
-## How it works
+## 工作原理
 
-The page fetches each Pinterest pin URL through a public CORS proxy, scans the response HTML for `i.pinimg.com` (images) and `v.pinimg.com` (videos) URLs, deduplicates by file hash, and downloads each blob via either the File System Access API or the browser's native download flow. Nothing leaves your machine except the proxied request to Pinterest.
+页面通过公共 CORS 代理获取目标网址 HTML,在响应里扫描媒体 URL,按文件 hash 去重,然后通过 File System Access API 或浏览器原生下载流程逐个保存。除了经代理转发的请求外,没有任何数据离开本机。
 
-## Local use
+## 本地使用
 
-Just open `index.html` in your browser.
+直接用浏览器打开 `index.html` 即可。
 
-## Limitations
+## 已知限制
 
-- Public CORS proxies (codetabs / corsproxy / allorigins) occasionally rate-limit or go down. Retry usually works.
-- File size cannot be predicted before download — Pinterest CDN doesn't expose `Content-Length` through proxies.
-- Story pins / carousel pins may return only the first slide.
-- HLS-only videos aren't supported in pure browser JS.
+- 公开 CORS 代理(codetabs / corsproxy / allorigins)偶尔会限流或宕机,重试一般就行
+- 文件大小无法在下载前预知 — CDN 不通过代理暴露 `Content-Length`
+- 故事 / 轮播类内容可能只返回首张
+- 仅 HLS 流的视频在纯浏览器 JS 里无法保存
 
-For long-term stability, swap the proxies in `index.html` with your own [Cloudflare Worker](https://developers.cloudflare.com/workers/) — takes 5 minutes and gives you unlimited free requests.
+如果想长期稳定,可以把 `index.html` 里的代理换成自己的 [Cloudflare Worker](https://developers.cloudflare.com/workers/) — 5 分钟搞定,免费不限量。
 
 ## License
 
