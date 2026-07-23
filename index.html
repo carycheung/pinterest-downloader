@@ -441,12 +441,20 @@ Cmd / Ctrl + Enter 直接解析"></textarea>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
+const PIDGETS_API = pinId => `https://widgets.pinterest.com/v3/pidgets/pins/info/?pin_ids=${pinId}`;
 const CORS_PROXIES = [
+  url => `https://proxy.cors.sh/${url}`,
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
 ];
-const BINARY_PROXY = url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`;
+const IMAGE_PROXY = url => `https://wsrv.nl/?url=${encodeURIComponent(url)}`;
+const BINARY_PROXIES = [
+  url => `https://proxy.cors.sh/${url}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
 const SIZE_RANK = { originals: 9999, '1200x': 1200, '736x': 736, '600x315': 600, '564x': 564, '474x': 474, '236x': 236, '136x136': 136, '60x60': 60 };
 const PARSE_CONCURRENCY = 3;
 const DOWNLOAD_CONCURRENCY = 3;
@@ -640,20 +648,102 @@ function extractVideos(html) {
   });
 }
 
+function collectVideoLists(obj, out) {
+  if (!obj || typeof obj !== 'object') return;
+  if (obj.video_list && typeof obj.video_list === 'object') out.push(obj.video_list);
+  for (const k of Object.keys(obj)) collectVideoLists(obj[k], out);
+}
+
+function pidgetsToItems(pin) {
+  const videos = [];
+  const seenVideo = new Set();
+  const lists = [];
+  collectVideoLists(pin, lists);
+  for (const list of lists) {
+    const flat = [];
+    (function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (typeof node.url === 'string') { flat.push(node); return; }
+      for (const k of Object.keys(node)) walk(node[k]);
+    })(list);
+    const mp4s = flat.filter(v => /\.mp4(\?|$)/i.test(v.url));
+    if (mp4s.length === 0) continue;
+    mp4s.sort((a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0));
+    const best = mp4s[0];
+    const hash = best.url.match(/([a-f0-9]{32})/i)?.[1] || best.url;
+    if (seenVideo.has(hash)) continue;
+    seenVideo.add(hash);
+    videos.push({
+      type: 'video',
+      url: best.url,
+      hash,
+      ext: 'mp4',
+      width: best.width,
+      height: best.height,
+      duration: best.duration ? best.duration / 1000 : undefined,
+      poster: best.thumbnail || undefined,
+    });
+  }
+
+  const images = [];
+  const seenImage = new Set();
+  const addImage = (url) => {
+    const m = url.match(/i\.pinimg\.com\/(?:originals|\d+x\d*)\/([a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]+\.(?:jpg|jpeg|png|gif|webp))/i);
+    if (!m || seenImage.has(m[1])) return;
+    seenImage.add(m[1]);
+    images.push({
+      type: 'image',
+      url: `https://i.pinimg.com/originals/${m[1]}`,
+      fallbackUrl: url.replace(/\/\d+x\d*\//, '/736x/'),
+      hash: m[1].split('/').pop().split('.')[0],
+      ext: m[1].split('.').pop().toLowerCase(),
+    });
+  };
+  const imgObjs = [];
+  (function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.originals?.url) { imgObjs.push(node.originals.url); return; }
+    for (const k of Object.keys(node)) walk(node[k]);
+  })(pin);
+  imgObjs.forEach(addImage);
+  if (pin.images) {
+    const sizes = Object.values(pin.images).sort((a, b) => (b.width || 0) - (a.width || 0));
+    if (sizes[0]?.url) addImage(sizes[0].url);
+  }
+
+  return videos.length > 0 ? videos : images;
+}
+
+async function fetchPidgets(pinId) {
+  const res = await fetch(PIDGETS_API(pinId));
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  const data = await res.json();
+  const pin = data?.data?.[0];
+  if (!pin) throw new Error('API 无数据');
+  return pin;
+}
+
 async function parseOnePin(sourceUrl) {
   let pinUrl = sourceUrl;
   if (/pin\.it/i.test(sourceUrl)) {
     pinUrl = await resolveShortUrl(sourceUrl);
   }
-  const { text: html } = await fetchWithProxy(pinUrl);
-  const videos = extractVideos(html);
-  const images = extractImages(html);
   const pinId = pinUrl.match(/\/pin\/(\d+)/)?.[1] || '';
-  const poster = images[0]?.url;
 
-  const items = videos.length > 0
-    ? videos.map(v => ({ ...v, poster }))
-    : images;
+  let items = [];
+  if (pinId) {
+    try {
+      items = pidgetsToItems(await fetchPidgets(pinId));
+    } catch (e) { /* fall through to HTML scrape */ }
+  }
+
+  if (items.length === 0) {
+    const { text: html } = await fetchWithProxy(pinUrl);
+    const videos = extractVideos(html);
+    const images = extractImages(html);
+    const poster = images[0]?.url;
+    items = videos.length > 0 ? videos.map(v => ({ ...v, poster })) : images;
+  }
 
   return items.map(it => ({
     ...it,
@@ -842,20 +932,40 @@ function updateSelectionUI() {
   els.downloadZipBtn.disabled = selected === 0;
 }
 
-async function fetchAsBlob(url) {
+async function fetchAsBlob(url, item) {
+  // 1. 直连(v.pinimg.com 的视频允许跨域 GET;图片域通常不带 ACAO 会失败)
   try {
     const res = await fetch(url, { mode: 'cors' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.blob();
-  } catch {
-    const res = await fetch(BINARY_PROXY(url));
-    if (!res.ok) throw new Error(`代理 ${res.status}`);
-    const ct = res.headers.get('content-type') || '';
-    if (ct.startsWith('text/html')) throw new Error('代理返回 HTML');
-    const blob = await res.blob();
-    if (blob.size < 1024) throw new Error(`仅 ${blob.size}B`);
-    return blob;
+  } catch { /* 继续 */ }
+
+  // 2. 图片走 wsrv.nl 图片代理(稳定、带 CORS)
+  if (item?.type === 'image' || /i\.pinimg\.com/.test(url)) {
+    for (const u of [url, item?.fallbackUrl].filter(Boolean)) {
+      try {
+        const res = await fetch(IMAGE_PROXY(u));
+        if (!res.ok) throw new Error(`wsrv ${res.status}`);
+        const blob = await res.blob();
+        if (blob.size > 1024) return blob;
+      } catch { /* 继续 */ }
+    }
   }
+
+  // 3. 通用代理逐个兜底
+  let lastErr;
+  for (const proxy of BINARY_PROXIES) {
+    try {
+      const res = await fetch(proxy(url));
+      if (!res.ok) throw new Error(`代理 ${res.status}`);
+      const ct = res.headers.get('content-type') || '';
+      if (ct.startsWith('text/html')) throw new Error('代理返回 HTML');
+      const blob = await res.blob();
+      if (blob.size < 1024) throw new Error(`仅 ${blob.size}B`);
+      return blob;
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error(lastErr?.message || '下载失败');
 }
 
 function triggerBrowserDownload(blob, filename) {
@@ -897,7 +1007,7 @@ async function downloadSelected() {
     updateOverlay({ now: item.filename });
     renderResults();
     try {
-      const blob = await fetchAsBlob(item.url);
+      const blob = await fetchAsBlob(item.url, item);
       await saveBlob(blob, item.filename);
       item.fileSize = blob.size;
       item.downloadStatus = 'done';
@@ -939,7 +1049,7 @@ async function downloadAsZip() {
   await pool(targets, DOWNLOAD_CONCURRENCY, async (item) => {
     updateOverlay({ now: item.filename });
     try {
-      const blob = await fetchAsBlob(item.url);
+      const blob = await fetchAsBlob(item.url, item);
       zip.file(item.filename, blob);
       item.fileSize = blob.size;
       item.downloadStatus = 'done';
